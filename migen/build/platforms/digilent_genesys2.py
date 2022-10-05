@@ -8,23 +8,10 @@
 
 from migen.build.generic_platform import *
 from migen.build.xilinx import XilinxPlatform
+from migen.build.fmc import FMCPlatform
 
 
-def _io(vadj):
-    vadj_std_single = {
-        1.2: "LVCMOS12",
-        1.8: "LVCMOS18",
-        2.5: "LVCMOS25",
-        3.3: "LVCMOS33"
-    }
-
-    vadj_std_diff = {
-        1.2: "LVCMOS12",
-        1.8: "LVCMOS18",
-        2.5: "LVCMOS25",
-        3.3: "LVCMOS33"
-    }
-
+def _io(vadj_single_iostd, vadj_diff_iostd):
     return [
         # Clk / Rst
         ("clk200", 0,
@@ -44,19 +31,19 @@ def _io(vadj):
         ("user_led", 7, Pins("W23"), IOStandard("LVCMOS33")),
 
         # Buttons
-        ("user_btn_c", 0, Pins("E18"), IOStandard(vadj_std_single)),
-        ("user_btn_d", 0, Pins("M19"), IOStandard(vadj_std_single)),
-        ("user_btn_l", 0, Pins("M20"), IOStandard(vadj_std_single)),
-        ("user_btn_r", 0, Pins("C19"), IOStandard(vadj_std_single)),
-        ("user_btn_u", 0, Pins("B19"), IOStandard(vadj_std_single)),
+        ("user_btn_c", 0, Pins("E18"), IOStandard(vadj_single_iostd)),
+        ("user_btn_d", 0, Pins("M19"), IOStandard(vadj_single_iostd)),
+        ("user_btn_l", 0, Pins("M20"), IOStandard(vadj_single_iostd)),
+        ("user_btn_r", 0, Pins("C19"), IOStandard(vadj_single_iostd)),
+        ("user_btn_u", 0, Pins("B19"), IOStandard(vadj_single_iostd)),
 
         # Switches
-        ("user_sw", 0, Pins("G19"), IOStandard(vadj_std_single)),
-        ("user_sw", 1, Pins("G25"), IOStandard(vadj_std_single)),
-        ("user_sw", 2, Pins("H24"), IOStandard(vadj_std_single)),
-        ("user_sw", 3, Pins("K19"), IOStandard(vadj_std_single)),
-        ("user_sw", 4, Pins("N19"), IOStandard(vadj_std_single)),
-        ("user_sw", 5, Pins("P19"), IOStandard(vadj_std_single)),
+        ("user_sw", 0, Pins("G19"), IOStandard(vadj_single_iostd)),
+        ("user_sw", 1, Pins("G25"), IOStandard(vadj_single_iostd)),
+        ("user_sw", 2, Pins("H24"), IOStandard(vadj_single_iostd)),
+        ("user_sw", 3, Pins("K19"), IOStandard(vadj_single_iostd)),
+        ("user_sw", 4, Pins("N19"), IOStandard(vadj_single_iostd)),
+        ("user_sw", 5, Pins("P19"), IOStandard(vadj_single_iostd)),
         ("user_sw", 6, Pins("P26"), IOStandard("LVCMOS33")),
         ("user_sw", 7, Pins("P27"), IOStandard("LVCMOS33")),
 
@@ -159,24 +146,44 @@ def _io(vadj):
             Subsignal("tx_ctl",  Pins(" AK14"), IOStandard("LVCMOS15")),
             Subsignal("tx_data", Pins("AJ12 AK11 AJ11 AK10"), IOStandard("LVCMOS15")),
         ),
+
+        ("fmc1_clk0_m2c", 0,
+            Subsignal("p", Pins("F20")),
+            Subsignal("n", Pins("E20")),
+            IOStandard(vadj_diff_iostd)
+        ),
+        ("fmc1_clk1_m2c", 0,
+            Subsignal("p", Pins("E28")),
+            Subsignal("n", Pins("D28")),
+            IOStandard(vadj_diff_iostd)
+        ),
+        ("fmc1_clk2_bidir", 0,
+            Subsignal("p", Pins("L25")),
+            Subsignal("n", Pins("K25")),
+            IOStandard(vadj_diff_iostd)
+        ),
+        ("fmc1_dp0_c2m", 0,
+            Subsignal("p", Pins("Y2")),
+            Subsignal("n", Pins("Y1"))
+        ),
+        ("fmc1_dp1_m2c", 0,
+            Subsignal("p", Pins("AA4")),
+            Subsignal("n", Pins("AA3"))
+        ),
+        ("gbtclk0_m2c", 0,
+            Subsignal("p", Pins("L8")),
+            Subsignal("n", Pins("L7"))
+        ),
+        ("gbtclk1_m2c", 0,
+            Subsignal("p", Pins("N8")),
+            Subsignal("n", Pins("N7"))
+        )
     ]
 
 
 _connectors = [
     ("fmc1", {
-        "DP0_C2M_P":     "Y2",
-        "DP0_C2M_N":     "Y1",
-        "DP0_M2C_P":     "AA4",
-        "DP0_M2C_N":     "AA3",
-        "GBTCLK0_M2C_P": "L8",
-        "GBTCLK0_M2C_N": "L7",
-
-        "CLK0_P": "F20",  # M2C
-        "CLK0_N": "E20",  # M2C
-        "CLK1_P": "E28",  # M2C
-        "CLK1_N": "D28",  # M2C
-        "CLK2_P": "L25",  # BIDIR
-        "CLK2_N": "K25",  # BIDIR
+        
 
         "HA00_CC_N": "K29",
         "HA00_CC_P": "K28",
@@ -345,13 +352,30 @@ _connectors = [
 ]
 
 
-class Platform(XilinxPlatform):
+class Platform(FMCPlatform, XilinxPlatform):
     default_clk_name = "clk200"
     default_clk_period = 5.0
 
-    def __init__(self):
-        XilinxPlatform.__init__(self, "xc7k325t-ffg900-2", _io, _connectors,
+    def __init__(self, fmc1_vadj=1.8, fmc1_vio_b_m2c=1.8):
+        iostd = {
+            1.2: {"diff": "LVDS", "single": "LVCMOS12"},
+            1.8: {"diff": "LVDS_25", "single": "LVCMOS18"},
+            2.5: {"diff": "LVDS_25", "single": "LVCMOS25"},
+            3.3: {"diff": None, "single": "LVCMOS33"},
+        }
+        iostd_fmc1_vadj = iostd[fmc1_vadj]
+        iostd_fmc1_vio_b_m2c = iostd[fmc1_vio_b_m2c]
+        XilinxPlatform.__init__(
+            self, 
+            device="xc7k325t-ffg900-2", 
+            io=_io(vadj_single_iostd=iostd_fmc1_vadj["single"],
+                   vadj_diff_iostd=iostd_fmc1_vadj["diff"]), 
+            connectors=_connectors,
             toolchain="vivado")
+        FMCPlatform.__init__(
+            self, 
+            fmc1_vadj=iostd_fmc1_vadj,
+            fmc1_vio_b_m2c=iostd_fmc1_vio_b_m2c)
         self.toolchain.bitstream_commands.extend([
             "set_property BITSTREAM.CONFIG.OVERTEMPPOWERDOWN Enable [current_design]",
             "set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]",
