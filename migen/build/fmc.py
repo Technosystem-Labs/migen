@@ -20,28 +20,8 @@ def _fmc_pin(fmc: str, bank: str, i: int, pol: str):
 
 class FMCPlatform:
     def __init__(self, fmc_config):
-        """
-        fmc1_vadj = {
-            "single": [
-                IOStandard("LVCMOS18")
-            ],
-            "diff": [
-                IOStandard("LVDS"),
-                Misc("DIFF_TERM=FALSE"),
-                Drive("FOO")
-            ]
-        }
-        """
         self.fmc_config = fmc_config
-        # TODO: Verify arguments
-        """
-        {
-            "fmc1": {
-                "bank_a": [IOStandard("LVDS")],
-                "bank_b": None
-            }
-        }
-        """
+        # TODO: Verify fmc_config
         self.bank_ab_compatible = \
             {  fmc: self._ab_compatible(fmc) for fmc in self.fmc_config.keys() }
         
@@ -109,39 +89,6 @@ class FMCPlatform:
         assert connectors.count(connectors[0]) == len(connectors), \
                f"Multiple connectors per entry not supported!"
         return connectors[0]
-            
-    def _do_banks_iostd_agree(self, connector, banks):
-        iostds = [self.fmc_config[connector][b] for b in banks]
-        return iostds.count(iostds[0]) == len(iostds)
-
-    def _adjust_constraints(self, *constraints):
-        connector = self._get_connector(*constraints)
-        if connector is None:
-            # Not FMC
-            return constraints
-        
-        new_constraints = []
-        banks = self._get_banks(*constraints)       
-        for c in constraints:
-            if isinstance(c, IOStandard):
-                # If not "single" or "diff" just add untouched
-                if c.name not in ["single", "diff"]:
-                    new_constraints.append(s)
-                    continue
-                # IOStandard must agree between pins
-                assert self._do_banks_iostd_agree(connector, banks), \
-                        "Entry spans banks with different IO standards!"
-                iostd = self._get_bank_io_standard(connector, banks[0])
-                # Add contraints provided by the platform instead,
-                # if supported
-                assert iostd[s.name] is not None, \
-                       f"Unsupported configuration for entry {entry[0]}!"
-                new_constraints += iostd[s.name]
-            elif isinstance(c, Subsignal):
-                c.constraints = self._adjust_constraints(*c.constraints)
-            else:
-                new_constraints.append(c)
-        return new_constraints        
     
     def _are_banks_compatible(self, connector, std, *banks):
         if banks.count(banks[0]) == len(banks):
@@ -167,22 +114,12 @@ class FMCPlatform:
             else:
                 new_constraints.append(c)
         return new_constraints
-    
-    # def _transform_subsignals(self, *constraints):
-    #     new_constraints = []
-    #     for c in constraints:
-    #         if isinstance(c, Subsignal):
-    #             c.constraints = self._transform_simple(*c.constraints)
-    #         new_constraints.append(c)
-    #     return new_constraints
                                   
-    def _get_transformed_constraints(self, *constraints):
+    def _transform_constraints(self, *constraints):
         connector = self._get_connector(*constraints)
         if connector is None:
             return constraints
-        new_constraints = []
-        new_constraints = self._transform_simple(*constraints)
-        return new_constraints
+        return self._transform_simple(*constraints)
 
     def add_extension(self, io):
         new_io = []
@@ -190,16 +127,15 @@ class FMCPlatform:
             try:
                 new_io.append([
                     *(entry[:2]),
-                    *self._get_transformed_constraints(*(entry[2:]))
+                    *self._transform_constraints(*(entry[2:]))
                 ])
             except AssertionError as e:
                 raise AssertionError(f"{e} ({entry[0]})")
-        from pprint import pprint
-        pprint(new_io)
         return super().add_extension(new_io)
     
     
 if __name__ == "__main__":
+    # TODO: Move to unit test
     
     class TestPlatform(FMCPlatform, GenericPlatform):
         def __init__(self):
@@ -232,7 +168,7 @@ if __name__ == "__main__":
                         "diff":   [IOStandard("DIFF_VADJ"), Misc("FOO")]
                     },
                     "bank_b": {
-                        "single": [IOStandard("BARR"), Misc("FOO")],
+                        "single": [IOStandard("BAR"), Misc("FOO")],
                         "diff":   [IOStandard("BAR"), Misc("FOO")]
                     }
                 }
@@ -240,10 +176,6 @@ if __name__ == "__main__":
             FMCPlatform.__init__(self, fmc_config)                
             GenericPlatform.__init__(self, "dummy", [], _connectors)
 
-
-    class TestExtension:
-        def _io(self, fmc):
-            return 
             
     io = lambda fmc: [
         (f"fmc{fmc}_spi", 0,
@@ -253,7 +185,7 @@ if __name__ == "__main__":
         ),
         
     ]        
-       
+ 
     platform = TestPlatform()
     platform.add_extension(io(fmc=1))
     print(platform.constraint_manager.available)
