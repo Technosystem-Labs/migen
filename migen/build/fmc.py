@@ -1,4 +1,5 @@
 from migen.build.generic_platform import *
+from migen.build.xilinx import XilinxPlatform
 
 
 def _fmc_pin(fmc: str, bank: str, i: int, pol: str):
@@ -18,23 +19,60 @@ def _fmc_pin(fmc: str, bank: str, i: int, pol: str):
 
 
 class FMCPlatform:
-    def __init__(self, **kwargs):
-        self.fmc_config = kwargs
-
-    def _get_bank_io_standard(self, connector, bank):
-        if bank in ["LA", "HA"]:
-            return self.fmc_config[f"{connector}_vadj"]
-        elif bank == "HB":
-            return self.fmc_config[f"{connector}_vio_b_m2c"]
-        else:
-            assert False, f"Invalid bank ({bank})!"
+    def __init__(self, fmc_config):
+        """
+        fmc1_vadj = {
+            "single": [
+                IOStandard("LVCMOS18")
+            ],
+            "diff": [
+                IOStandard("LVDS"),
+                Misc("DIFF_TERM=FALSE"),
+                Drive("FOO")
+            ]
+        }
+        """
+        self.fmc_config = fmc_config
+        # TODO: Verify arguments
+        """
+        {
+            "fmc1": {
+                "bank_a": [IOStandard("LVDS")],
+                "bank_b": None
+            }
+        }
+        """
+        self.bank_ab_compatible = \
+            {  fmc: self._ab_compatible(fmc) for fmc in self.fmc_config.keys() }
+        
+    def _ab_compatible(self, fmc):
+        config = self.fmc_config[fmc]
+        
+        def compare_standard(std):
+            bank_a = config["bank_a"][std]
+            bank_b = config["bank_b"][std]
+            if bank_a is None or bank_b is None:
+                return False
+            if len(bank_a) != len(bank_b):
+                return False
+            bank_a_str = sorted([repr(c) for c in bank_a])
+            bank_b_str = sorted([repr(c) for c in bank_b])
+            for ca, cb in zip(bank_a_str, bank_b_str): 
+                if ca != cb:
+                    return False
+            return True
+        
+        return {
+            "single": compare_standard("single"),
+            "diff": compare_standard("diff")
+        }      
 
     @staticmethod
     def _what_bank(identifier):
-        banks = ["LA", "HA", "HB"]
-        for b in banks:
-            if b in identifier:
-                return b
+        mapping = {"LA": "bank_a", "HA": "bank_a", "HB": "bank_b"}
+        for k, v in mapping.items():
+            if k in identifier:
+                return v
         assert False, f"Invalid FMC bank ({identifier})!"
 
     @staticmethod
@@ -46,44 +84,176 @@ class FMCPlatform:
         return identifier.split(":")[0]
 
     @classmethod
-    def _get_entry_bank(cls, entry):
+    def _get_banks(cls, *constraints):
         banks = []
-        for s in entry:
+        for s in constraints:
             if isinstance(s, Pins):
                 for identifier in s.identifiers:
                     banks.append(cls._what_bank(identifier))
             elif isinstance(s, Subsignal):
-                banks.append(cls._get_entry_bank(s.constraints))
-        assert banks.count(banks[0]) == len(banks), f"Multiple banks per"\
-            f" entry not supported ({entry[0]})!"
-        return banks[0]
+                banks += cls._get_banks(*s.constraints)
+        return banks
 
     @classmethod
-    def _get_entry_connector(cls, entry):
+    def _get_connector(cls, *constaints):
         connectors = []
-        for s in entry:
-            if isinstance(s, Pins):
-                for identifier in s.identifiers:
+        for c in constaints:
+            if isinstance(c, Pins):
+                for identifier in c.identifiers:
                     connectors.append(cls._what_connector(identifier))
-            elif isinstance(s, Subsignal):
-                connectors.append(cls._get_entry_connector(s.constraints))
+            elif isinstance(c, Subsignal):
+                connectors.append(cls._get_connector(*c.constraints))
+        if not connectors:
+            # Not FMC
+            return None
         assert connectors.count(connectors[0]) == len(connectors), \
-               f"Multiple connectors per entry not supported ({entry[0]})!"
+               f"Multiple connectors per entry not supported!"
         return connectors[0]
+            
+    def _do_banks_iostd_agree(self, connector, banks):
+        iostds = [self.fmc_config[connector][b] for b in banks]
+        return iostds.count(iostds[0]) == len(iostds)
+
+    def _adjust_constraints(self, *constraints):
+        connector = self._get_connector(*constraints)
+        if connector is None:
+            # Not FMC
+            return constraints
+        
+        new_constraints = []
+        banks = self._get_banks(*constraints)       
+        for c in constraints:
+            if isinstance(c, IOStandard):
+                # If not "single" or "diff" just add untouched
+                if c.name not in ["single", "diff"]:
+                    new_constraints.append(s)
+                    continue
+                # IOStandard must agree between pins
+                assert self._do_banks_iostd_agree(connector, banks), \
+                        "Entry spans banks with different IO standards!"
+                iostd = self._get_bank_io_standard(connector, banks[0])
+                # Add contraints provided by the platform instead,
+                # if supported
+                assert iostd[s.name] is not None, \
+                       f"Unsupported configuration for entry {entry[0]}!"
+                new_constraints += iostd[s.name]
+            elif isinstance(c, Subsignal):
+                c.constraints = self._adjust_constraints(*c.constraints)
+            else:
+                new_constraints.append(c)
+        return new_constraints        
+    
+    def _are_banks_compatible(self, connector, std, *banks):
+        if banks.count(banks[0]) == len(banks):
+            return True
+        else:
+            return self.bank_ab_compatible[connector][std]
+    
+    def _transform_simple(self, *constraints):
+        connector = self._get_connector(*constraints)
+        banks = self._get_banks(*constraints)
+        new_constraints = []
+        for c in constraints:
+            if isinstance(c, IOStandard):
+                if c.name in ["single", "diff"]:
+                    assert self._are_banks_compatible(connector, c.name, *banks), \
+                           "Incompatible IO standards!"
+                    new_constraints += self.fmc_config[connector][banks[0]][c.name]
+                else:
+                    new_constraints.append(c)
+            elif isinstance(c, Subsignal):
+                c.constraints = self._transform_simple(*c.constraints)
+                new_constraints.append(c)
+            else:
+                new_constraints.append(c)
+        return new_constraints
+    
+    # def _transform_subsignals(self, *constraints):
+    #     new_constraints = []
+    #     for c in constraints:
+    #         if isinstance(c, Subsignal):
+    #             c.constraints = self._transform_simple(*c.constraints)
+    #         new_constraints.append(c)
+    #     return new_constraints
+                                  
+    def _get_transformed_constraints(self, *constraints):
+        connector = self._get_connector(*constraints)
+        if connector is None:
+            return constraints
+        new_constraints = []
+        new_constraints = self._transform_simple(*constraints)
+        return new_constraints
 
     def add_extension(self, io):
+        new_io = []
         for entry in io:
-            bank = self._get_entry_bank(entry)
-            connector = self._get_entry_connector(entry)
-            iostd = self._get_bank_io_standard(connector, bank)
-            for s in entry: 
-                if isinstance(s, IOStandard):
-                    if s.name == "diff":
-                        s.name = iostd["diff"]
-                    elif s.name == "single":
-                        s.name = iostd["single"]
-                    else:
-                        pass
-                    assert s.name is not None, \
-                       f"Unsupported configuration for entry {entry[0]}!"
-        return super().add_extension(io)
+            try:
+                new_io.append([
+                    *(entry[:2]),
+                    *self._get_transformed_constraints(*(entry[2:]))
+                ])
+            except AssertionError as e:
+                raise AssertionError(f"{e} ({entry[0]})")
+        from pprint import pprint
+        pprint(new_io)
+        return super().add_extension(new_io)
+    
+    
+if __name__ == "__main__":
+    
+    class TestPlatform(FMCPlatform, GenericPlatform):
+        def __init__(self):
+            _connectors = [
+                ("come_conn", {
+                    "HA04_N": "M25",
+                    "HA04_P": "M24",
+                    "HA05_N": "H29",
+                    "HA05_P": "J29",
+                }),
+                ("fmc1", {
+                    "HA00_CC_N": "K29",
+                    "HA00_CC_P": "K28",
+                    "HA02_N": "P22",
+                    "HA02_P": "P21",
+                    "HB00_CC_N": "F13",
+                    "HB00_CC_P": "G13",
+                    "HB01_N": "G15",
+                    "HB01_P": "H15",
+                    "LA00_CC_N": "C27",
+                    "LA00_CC_P": "D27",
+                    "LA02_N": "G30",
+                    "LA02_P": "H30"
+                })
+            ]
+            fmc_config = { 
+                "fmc1": {
+                    "bank_a": {
+                        "single": [IOStandard("BAR"), Misc("FOO")],
+                        "diff":   [IOStandard("DIFF_VADJ"), Misc("FOO")]
+                    },
+                    "bank_b": {
+                        "single": [IOStandard("BARR"), Misc("FOO")],
+                        "diff":   [IOStandard("BAR"), Misc("FOO")]
+                    }
+                }
+            }
+            FMCPlatform.__init__(self, fmc_config)                
+            GenericPlatform.__init__(self, "dummy", [], _connectors)
+
+
+    class TestExtension:
+        def _io(self, fmc):
+            return 
+            
+    io = lambda fmc: [
+        (f"fmc{fmc}_spi", 0,
+            Subsignal("sck", Pins(_fmc_pin(fmc, "HA", 0, "p"))),
+            Subsignal("miso", Pins(_fmc_pin(fmc, "HB", 0, "p"))),
+            IOStandard("single")
+        ),
+        
+    ]        
+       
+    platform = TestPlatform()
+    platform.add_extension(io(fmc=1))
+    print(platform.constraint_manager.available)
