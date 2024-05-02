@@ -4,6 +4,8 @@
 # Warsaw Univeristy of Technology <jakub.matyas.stud@pw.edu.pl>
 # Copyright (c) 2022 Paweł Kulik
 # Creotech Instruments S.A. <pawel.kulik@creotech.pl>
+# Copyright (c) 2024 Mikołaj Sowiński
+# TechnoSystem R&D <mikolaj.sowinski@rd.technosystem.pl>
 # SPDX-License-Identifier: BSD-2-Clause
 
 from migen.build.generic_platform import IOStandard, Pins, Subsignal, Misc
@@ -28,7 +30,6 @@ _ios = [
     ("gtp_clk", 0,
         Subsignal("p", Pins("F10")),
         Subsignal("n", Pins("E10"))
-        # IOStandard("LVDS_25")
     ),
 
     ("fpga_i2c", 0,
@@ -59,13 +60,15 @@ _ios = [
         IOStandard("LVDS_25")
     ),
 
+    # FIXME: shared_bus IOStandard should depend on selected VADJ
     ("shared_bus", 0,
         Subsignal("dir", Pins("F21 D20 E22 F15 D21")),
         Subsignal("vadj", Pins("G22 E21 G21 D14 D22")),
         IOStandard("LVCMOS25")
     ),
-    ("gtp3_sel", 0, Pins("F4"), IOStandard("LVCMOS25")),
 
+    # FIXME: gtp3_sel IOStandard should depend on selected VADJ
+    ("gtp3_sel", 0, Pins("F4"), IOStandard("LVCMOS25")),
 
     ("ddram", 0,
         Subsignal("a", Pins(
@@ -378,10 +381,15 @@ _extensions = [
 class Platform(XilinxPlatform):
     userid = 0xffffffff
 
-    def __init__(self):
+    def __init__(self, hw_rev="v1.1"):
+        if hw_rev == "v1.0":
+            fpga = "xc7a100t-fgg484-3"
+        elif hw_rev == "v1.1":
+            fpga = "xc7a200t-fbg484-3"
+        else:
+            raise ValueError("Unknown hardware revision", hw_rev)
         XilinxPlatform.__init__(
-            self, "xc7a100t-fgg484-3", _ios, _connectors,
-            toolchain="vivado")
+            self, fpga, _ios, _connectors, toolchain="vivado")
         self.add_extension(_extensions)
 
         # https://support.xilinx.com/s/article/42036?language=en_US
